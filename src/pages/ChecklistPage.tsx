@@ -32,8 +32,9 @@ export default function ChecklistPage() {
     new Set(['xiaoyuzhou', 'ximalaya']),
   );
   const [isRunning, setIsRunning] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
-  const { checklists, currentTaskId, runChecklist } = useStore();
+  const { checklists, currentTaskId, runChecklist, exportZip } = useStore();
   const taskId = currentTaskId || 'task-002';
   const items = checklists[taskId] || [];
 
@@ -352,14 +353,27 @@ export default function ChecklistPage() {
           已选择 <span className="font-semibold text-brand-700">{selectedPlatforms.size}</span> 个平台
         </div>
         <button
-          disabled={selectedPlatforms.size === 0}
+          disabled={selectedPlatforms.size === 0 || isExporting}
+          onClick={async () => {
+            if (selectedPlatforms.size === 0 || isExporting) return;
+            setIsExporting(true);
+            try {
+              await exportZip(taskId, Array.from(selectedPlatforms));
+            } finally {
+              setTimeout(() => setIsExporting(false), 500);
+            }
+          }}
           className={cn(
             'btn-primary flex items-center gap-2',
-            selectedPlatforms.size === 0 && 'opacity-50 cursor-not-allowed',
+            (selectedPlatforms.size === 0 || isExporting) && 'opacity-50 cursor-not-allowed',
           )}
         >
-          <FileArchive className="w-4 h-4" />
-          导出 ZIP 包
+          {isExporting ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <FileArchive className="w-4 h-4" />
+          )}
+          {isExporting ? '打包中...' : '导出 ZIP 包'}
         </button>
       </div>
     </div>
