@@ -20,6 +20,10 @@ import {
   CheckCircle,
   XOctagon,
   AlertCircle,
+  Trash2,
+  Filter,
+  MessageCircle,
+  HardDrive,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { cn } from '@/lib/utils';
@@ -31,7 +35,15 @@ const platforms = [
   { key: 'ximalaya', label: '喜马拉雅', icon: Podcast, color: 'text-red-500' },
   { key: 'official', label: '公众号', icon: BookOpen, color: 'text-emerald-600' },
   { key: 'xiaohongshu', label: '小红书', icon: Heart, color: 'text-rose-500' },
+  { key: 'weibo', label: '微博', icon: MessageCircle, color: 'text-amber-600' },
 ];
+
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes === 0) return '0 B';
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
 
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
@@ -72,8 +84,20 @@ export default function ChecklistPage() {
   );
   const [isRunning, setIsRunning] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [exportTaskFilter, setExportTaskFilter] = useState<string>('all');
 
-  const { checklists, currentTaskId, runChecklist, exportZip, validateAllPlatforms, exports, tasks } = useStore();
+  const {
+    checklists,
+    currentTaskId,
+    runChecklist,
+    exportZip,
+    validateAllPlatforms,
+    exports,
+    tasks,
+    deleteExportRecord,
+    downloadExportRecord,
+  } = useStore();
   const taskId = currentTaskId || 'task-002';
   const items = checklists[taskId] || [];
 
@@ -81,13 +105,27 @@ export default function ChecklistPage() {
     return validateAllPlatforms(taskId);
   }, [validateAllPlatforms, taskId, checklists]);
 
-  const taskExports = useMemo(() => {
-    return exports.filter((e) => e.taskId === taskId);
-  }, [exports, taskId]);
+  const selectedValidations = useMemo(() => {
+    return platformValidations.filter((v) => selectedPlatforms.has(v.key));
+  }, [platformValidations, selectedPlatforms]);
 
-  const allExports = useMemo(() => {
-    return exports.slice(0, 20);
-  }, [exports]);
+  const failedPlatformSummary = useMemo(() => {
+    const result: Array<{ platformLabel: string; fails: string[]; warns: string[] }> = [];
+    for (const v of selectedValidations) {
+      const fails = v.fields.filter((f) => f.status === 'fail').map((f) => f.label);
+      const warns = v.fields.filter((f) => f.status === 'warning').map((f) => f.label);
+      if (fails.length > 0 || warns.length > 0) {
+        result.push({ platformLabel: v.label, fails, warns });
+      }
+    }
+    return result;
+  }, [selectedValidations]);
+
+  const filteredExports = useMemo(() => {
+    if (exportTaskFilter === 'all') return exports;
+    if (exportTaskFilter === 'current') return exports.filter((e) => e.taskId === taskId);
+    return exports.filter((e) => e.taskId === exportTaskFilter);
+  }, [exports, exportTaskFilter, taskId]);
 
   const toggleExpand = (id: string) => {
     setExpandedItems((prev) => {
@@ -372,32 +410,65 @@ export default function ChecklistPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-5 gap-3 mb-6">
         {platforms.map((platform) => {
           const Icon = platform.icon;
           const isSelected = selectedPlatforms.has(platform.key);
+          const pv = platformValidations.find((v) => v.key === platform.key);
+          const hasFail = pv?.fields.some((f) => f.status === 'fail');
+          const hasWarn = pv?.fields.some((f) => f.status === 'warning');
           return (
             <label
               key={platform.key}
               className={cn(
-                'flex items-center gap-3 p-4 rounded-2xl border-2 cursor-pointer transition-all duration-200',
+                'flex flex-col items-center gap-2 p-4 rounded-2xl border-2 cursor-pointer transition-all duration-200 relative',
                 isSelected
                   ? 'border-brand-500 bg-brand-50/50'
                   : 'border-stone-200 bg-white hover:border-brand-300',
               )}
             >
-              <input
-                type="checkbox"
-                checked={isSelected}
-                onChange={() => togglePlatform(platform.key)}
-                className="accent-brand-600 w-4 h-4"
-              />
-              <Icon className={cn('w-5 h-5', platform.color)} />
-              <span className="text-sm font-medium text-stone-700">{platform.label}</span>
+              <div className="flex items-center gap-2 w-full">
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => togglePlatform(platform.key)}
+                  className="accent-brand-600 w-4 h-4 flex-shrink-0"
+                />
+                <Icon className={cn('w-5 h-5', platform.color)} />
+                <span className="text-sm font-medium text-stone-700">{platform.label}</span>
+              </div>
+              {(hasFail || hasWarn) && (
+                <div className="flex items-center gap-1 text-[11px]">
+                  {hasFail && <span className="chip bg-rose-50 text-rose-600 !py-0.5 !px-2">有未通过</span>}
+                  {!hasFail && hasWarn && <span className="chip bg-amber-50 text-amber-600 !py-0.5 !px-2">有警告</span>}
+                </div>
+              )}
             </label>
           );
         })}
       </div>
+
+      {failedPlatformSummary.length > 0 && (
+        <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-200">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-amber-800 mb-2">
+                以下选中平台存在未通过或警告字段，仍可导出草稿包：
+              </p>
+              <ul className="space-y-1">
+                {failedPlatformSummary.map((s, idx) => (
+                  <li key={idx} className="text-sm text-amber-700">
+                    <span className="font-medium">【{s.platformLabel}】</span>
+                    {s.fails.length > 0 && <span>未通过：{s.fails.join('、')}；</span>}
+                    {s.warns.length > 0 && <span>警告：{s.warns.join('、')}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center justify-between pt-4 border-t border-stone-100">
         <div className="text-sm text-stone-500">
@@ -424,7 +495,7 @@ export default function ChecklistPage() {
           ) : (
             <FileArchive className="w-4 h-4" />
           )}
-          {isExporting ? '打包中...' : '导出 ZIP 包'}
+          {isExporting ? '打包中...' : failedPlatformSummary.length > 0 ? '导出草稿 ZIP 包' : '导出 ZIP 包'}
         </button>
       </div>
     </div>
@@ -520,151 +591,198 @@ export default function ChecklistPage() {
   };
 
   const renderExportHistory = () => {
+    const platformNameMap: Record<string, string> = {
+      xiaoyuzhou: '小宇宙',
+      ximalaya: '喜马拉雅',
+      official: '公众号',
+      xiaohongshu: '小红书',
+      weibo: '微博',
+    };
+    const currentTaskTitle = tasks.find((t) => t.id === taskId)?.title || '当前任务';
+
     return (
       <div className="glass-card p-6 mt-8">
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-5">
           <div>
             <h3 className="text-lg font-semibold text-stone-900 flex items-center gap-2">
               <Download className="w-5 h-5 text-brand-500" />
-              最近导出记录
+              发布包管理
             </h3>
             <p className="text-sm text-stone-500 mt-1">
-              {taskExports.length > 0
-                ? `当前任务已导出 ${taskExports.length} 次，保留最近 50 条历史`
-                : '暂无导出记录，点击上方按钮导出第一个发布包'}
+              共 {exports.length} 条历史记录，基于当时内容快照重新下载，包内容不变
             </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Filter className="w-4 h-4 text-stone-400" />
+            <select
+              value={exportTaskFilter}
+              onChange={(e) => setExportTaskFilter(e.target.value)}
+              className="input-base text-sm py-2 pr-8"
+            >
+              <option value="all">全部任务</option>
+              <option value="current">当前任务（{currentTaskTitle}）</option>
+              {tasks
+                .filter((t) => t.id !== taskId && exports.some((e) => e.taskId === t.id))
+                .map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.title}
+                  </option>
+                ))}
+            </select>
           </div>
         </div>
 
-        {allExports.length === 0 ? (
+        {filteredExports.length === 0 ? (
           <div className="py-12 text-center">
-            <Download className="w-12 h-12 mx-auto mb-3 text-stone-300" />
-            <p className="text-stone-500">还没有导出记录</p>
+            <HardDrive className="w-12 h-12 mx-auto mb-3 text-stone-300" />
+            <p className="text-stone-500">该筛选条件下暂无导出记录</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-stone-100">
-                  <th className="text-left py-3 px-4 text-sm font-medium text-stone-500">任务名</th>
-                  <th className="text-left py-3 px-4 text-sm font-medium text-stone-500">发布平台</th>
-                  <th className="text-left py-3 px-4 text-sm font-medium text-stone-500">导出时间</th>
-                  <th className="text-left py-3 px-4 text-sm font-medium text-stone-500">通过率</th>
-                  <th className="text-left py-3 px-4 text-sm font-medium text-stone-500">检查状态</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-stone-50">
-                {allExports.map((record) => {
-                  const platformNameMap: Record<string, string> = {
-                    xiaoyuzhou: '小宇宙',
-                    ximalaya: '喜马拉雅',
-                    official: '公众号',
-                    xiaohongshu: '小红书',
-                    weibo: '微博',
-                  };
-                  const rateColor =
-                    record.passRate >= 90
-                      ? 'text-emerald-600'
-                      : record.passRate >= 70
-                        ? 'text-amber-600'
-                        : 'text-rose-600';
-                  const rateBg =
-                    record.passRate >= 90
-                      ? 'from-emerald-400 to-emerald-600'
-                      : record.passRate >= 70
-                        ? 'from-amber-400 to-amber-600'
-                        : 'from-rose-400 to-rose-600';
-                  const size = 44;
-                  const strokeWidth = 5;
-                  const radius = (size - strokeWidth) / 2;
-                  const circumference = radius * 2 * Math.PI;
-                  const offset = circumference - (record.passRate / 100) * circumference;
+          <div className="space-y-3">
+            {filteredExports.map((record) => {
+              const rateColor =
+                record.passRate >= 90
+                  ? 'text-emerald-600'
+                  : record.passRate >= 70
+                    ? 'text-amber-600'
+                    : 'text-rose-600';
+              const ringColor =
+                record.passRate >= 90
+                  ? '#10b981'
+                  : record.passRate >= 70
+                    ? '#f59e0b'
+                    : '#f43f5e';
+              const size = 48;
+              const strokeWidth = 5;
+              const radius = (size - strokeWidth) / 2;
+              const circumference = radius * 2 * Math.PI;
+              const offset = circumference - (record.passRate / 100) * circumference;
+              const gradId = `grad-${record.id}`;
+              const ringStop2 =
+                record.passRate >= 90 ? '#059669' : record.passRate >= 70 ? '#d97706' : '#e11d48';
+              const isCurrentTask = record.taskId === taskId;
 
-                  return (
-                    <tr key={record.id} className="hover:bg-stone-50/50 transition-colors">
-                      <td className="py-4 px-4">
-                        <p className="font-medium text-stone-800 line-clamp-1">{record.taskTitle}</p>
-                      </td>
-                      <td className="py-4 px-4">
-                        <div className="flex flex-wrap gap-1">
-                          {record.platforms.map((p) => (
-                            <span
-                              key={p}
-                              className="chip bg-brand-50 text-brand-700 text-xs"
-                            >
-                              {platformNameMap[p] || p}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="py-4 px-4">
-                        <span className="flex items-center gap-1.5 text-sm text-stone-600">
-                          <Calendar className="w-3.5 h-3.5 text-stone-400" />
-                          {formatDateTime(record.exportedAt)}
+              return (
+                <div
+                  key={record.id}
+                  className="flex items-center gap-4 p-4 rounded-2xl border border-stone-200 bg-white hover:shadow-md hover:border-brand-200 transition-all"
+                >
+                  <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
+                    <svg width={size} height={size} className="transform -rotate-90">
+                      <circle
+                        cx={size / 2}
+                        cy={size / 2}
+                        r={radius}
+                        stroke="#e7e5e4"
+                        strokeWidth={strokeWidth}
+                        fill="none"
+                      />
+                      <circle
+                        cx={size / 2}
+                        cy={size / 2}
+                        r={radius}
+                        stroke={`url(#${gradId})`}
+                        strokeWidth={strokeWidth}
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeDasharray={circumference}
+                        strokeDashoffset={offset}
+                      />
+                      <defs>
+                        <linearGradient id={gradId} x1="0%" y1="0%" x2="100%" y2="0%">
+                          <stop offset="0%" stopColor={ringColor} />
+                          <stop offset="100%" stopColor={ringStop2} />
+                        </linearGradient>
+                      </defs>
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className={cn('text-xs font-bold', rateColor)}>{record.passRate}%</span>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <p className="font-semibold text-stone-800 truncate">{record.taskTitle}</p>
+                      {isCurrentTask && (
+                        <span className="chip bg-brand-50 text-brand-700 text-[10px] !py-0 !px-2">当前任务</span>
+                      )}
+                      {record.passRate >= 90 ? (
+                        <span className="chip bg-emerald-50 text-emerald-600 text-[10px] !py-0 !px-2">
+                          通过
                         </span>
-                      </td>
-                      <td className="py-4 px-4">
-                        <div className="flex items-center gap-3">
-                          <div className="relative" style={{ width: size, height: size }}>
-                            <svg width={size} height={size} className="transform -rotate-90">
-                              <circle
-                                cx={size / 2}
-                                cy={size / 2}
-                                r={radius}
-                                stroke="#e7e5e4"
-                                strokeWidth={strokeWidth}
-                                fill="none"
-                              />
-                              <circle
-                                cx={size / 2}
-                                cy={size / 2}
-                                r={radius}
-                                stroke="url(#grad)"
-                                strokeWidth={strokeWidth}
-                                fill="none"
-                                strokeLinecap="round"
-                                strokeDasharray={circumference}
-                                strokeDashoffset={offset}
-                              />
-                              <defs>
-                                <linearGradient id="grad" className={cn('bg-gradient-to-r', rateBg)} x1="0%" y1="0%" x2="100%" y2="0%">
-                                  <stop offset="0%" stopColor={record.passRate >= 90 ? '#10b981' : record.passRate >= 70 ? '#f59e0b' : '#f43f5e'} />
-                                  <stop offset="100%" stopColor={record.passRate >= 90 ? '#059669' : record.passRate >= 70 ? '#d97706' : '#e11d48'} />
-                                </linearGradient>
-                              </defs>
-                            </svg>
-                            <div className="absolute inset-0 flex items-center justify-center">
-                              <span className={cn('text-xs font-bold', rateColor)}>{record.passRate}%</span>
-                            </div>
-                          </div>
-                          <span className="text-xs text-stone-500">
-                            {record.passedChecks}/{record.totalChecks}项
+                      ) : record.passRate >= 70 ? (
+                        <span className="chip bg-amber-50 text-amber-600 text-[10px] !py-0 !px-2">
+                          警告
+                        </span>
+                      ) : (
+                        <span className="chip bg-rose-50 text-rose-600 text-[10px] !py-0 !px-2">
+                          未通过
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500">
+                      <span className="flex items-center gap-1">
+                        <Calendar className="w-3 h-3" />
+                        {formatDateTime(record.exportedAt)}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <HardDrive className="w-3 h-3" />
+                        {record.fileSizeBytes ? formatBytes(record.fileSizeBytes) : '—'}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        {record.passedChecks}/{record.totalChecks} 项检查
+                      </span>
+                      <div className="flex flex-wrap gap-1">
+                        {record.platforms.map((p) => (
+                          <span key={p} className="chip bg-stone-100 text-stone-600 text-[10px] !py-0 !px-1.5">
+                            {platformNameMap[p] || p}
                           </span>
-                        </div>
-                      </td>
-                      <td className="py-4 px-4">
-                        {record.passRate >= 90 ? (
-                          <span className="chip bg-emerald-100 text-emerald-700">
-                            <CheckCircle className="w-3 h-3" />
-                            检查通过
-                          </span>
-                        ) : record.passRate >= 70 ? (
-                          <span className="chip bg-amber-100 text-amber-700">
-                            <AlertTriangle className="w-3 h-3" />
-                            有警告项
-                          </span>
-                        ) : (
-                          <span className="chip bg-rose-100 text-rose-700">
-                            <XCircle className="w-3 h-3" />
-                            需修正
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                      disabled={downloadingId === record.id}
+                      onClick={async () => {
+                        setDownloadingId(record.id);
+                        try {
+                          await downloadExportRecord(record.id);
+                        } finally {
+                          setTimeout(() => setDownloadingId(null), 500);
+                        }
+                      }}
+                      className={cn(
+                        'flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium transition-all',
+                        downloadingId === record.id
+                          ? 'bg-brand-100 text-brand-600 cursor-wait'
+                          : 'bg-brand-50 text-brand-700 hover:bg-brand-100',
+                      )}
+                      title="重新下载原始内容快照"
+                    >
+                      {downloadingId === record.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Download className="w-3.5 h-3.5" />
+                      )}
+                      下载
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (confirm('确定删除这条导出记录吗？')) {
+                          deleteExportRecord(record.id);
+                        }
+                      }}
+                      className="p-2 rounded-xl text-stone-400 hover:text-rose-600 hover:bg-rose-50 transition-all"
+                      title="删除记录"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

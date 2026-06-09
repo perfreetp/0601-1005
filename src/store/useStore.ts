@@ -31,6 +31,11 @@ export interface ExportRecord {
   passRate: number;
   totalChecks: number;
   passedChecks: number;
+  fileSizeBytes: number;
+  copySnapshot: CopyContent;
+  chapterSnapshot: Chapter[];
+  highlightSnapshot: Highlight[];
+  validationSnapshot: PlatformValidation[];
 }
 
 type PersistedState = {
@@ -114,6 +119,8 @@ interface StoreState extends PersistedState {
 
   exportZip: (taskId: string, platforms: string[]) => Promise<void>;
   addExportRecord: (record: ExportRecord) => void;
+  deleteExportRecord: (recordId: string) => void;
+  downloadExportRecord: (recordId: string) => Promise<void>;
 }
 
 function formatTime(seconds: number): string {
@@ -458,7 +465,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   validateAllPlatforms: (taskId) => {
-    return ['xiaoyuzhou', 'ximalaya', 'official', 'xiaohongshu'].map((k) =>
+    return ['xiaoyuzhou', 'ximalaya', 'official', 'xiaohongshu', 'weibo'].map((k) =>
       get().validatePlatform(taskId, k),
     );
   },
@@ -640,26 +647,31 @@ export const useStore = create<StoreState>((set, get) => ({
     get().persist();
   },
 
-  exportZip: async (taskId, platforms) => {
-    if (platforms.length === 0) return;
-    const task = get().tasks.find((t) => t.id === taskId);
-    const copy = get().copies[taskId];
-    const transcript = get().transcripts[taskId] || [];
-    const chapters = get().chapters[taskId] || [];
-    const highlights = get().highlights[taskId] || [];
-    const checklist = get().checklists[taskId] || [];
-    if (!task || !copy) return;
+  deleteExportRecord: (recordId) => {
+    set((s) => ({
+      exports: s.exports.filter((e) => e.id !== recordId),
+    }));
+    get().persist();
+  },
 
-    const validations = get().validateAllPlatforms(taskId);
+  downloadExportRecord: async (recordId) => {
+    const record = get().exports.find((e) => e.id === recordId);
+    if (!record) return;
 
-    const zip = new JSZip();
-    const safeTitle = task.title.replace(/[\\/:*?"<>|]/g, '_');
+    const task = get().tasks.find((t) => t.id === record.taskId);
+    const transcript = get().transcripts[record.taskId] || [];
+    const copy = record.copySnapshot;
+    const chapters = record.chapterSnapshot;
+    const highlights = record.highlightSnapshot;
+    const validations = record.validationSnapshot;
+    const safeTitle = record.taskTitle.replace(/[\\/:*?"<>|]/g, '_');
 
     const platformNameMap: Record<string, string> = {
       xiaoyuzhou: '小宇宙',
       ximalaya: '喜马拉雅',
       official: '公众号',
       xiaohongshu: '小红书',
+      weibo: '微博',
     };
 
     const chapterTimeline = chapters
@@ -674,47 +686,219 @@ export const useStore = create<StoreState>((set, get) => ({
       .map((h, i) => `${i + 1}. ${h.isFavorite ? '⭐ ' : ''}"${h.text}"\n   —— ${h.speaker} @ ${formatTime(h.startTime)}`)
       .join('\n\n');
 
-    const checkReport = checklist
-      .map((c) => {
-        const icon = c.status === 'pass' ? '✅' : c.status === 'warning' ? '⚠️' : c.status === 'fail' ? '❌' : '⚪';
-        return `${icon} ${c.name}：${c.message}\n${c.details.map((d) => `   · ${d}`).join('\n')}`;
-      })
+    function buildPlatformReport(pKey: string, copyData: CopyContent, valList: PlatformValidation[]): string {
+      const v = valList.find((x) => x.key === pKey) || { key: pKey, label: pKey, fields: [] };
+      const passCount = v.fields.filter((f) => f.status === 'pass').length;
+      const warnCount = v.fields.filter((f) => f.status === 'warning').length;
+      const failCount = v.fields.filter((f) => f.status === 'fail').length;
+      const sensitive = scanAllContent(copyData);
+      let report = `【${v.label}】发布交付单\n`;
+      report += `生成时间：${new Date(record.exportedAt).toLocaleString()}\n`;
+      report += `任务标题：${record.taskTitle}\n`;
+      report += `校验结果：${passCount} 通过 / ${warnCount} 警告 / ${failCount} 未通过\n\n`;
+      report += `==== 一、字段校验结果 ====\n`;
+      for (const f of v.fields) {
+        const icon = f.status === 'pass' ? '✅' : f.status === 'warning' ? '⚠️' : '❌';
+        report += `${icon} ${f.label}（${f.length}/${f.max || '—'}）：${f.message}\n`;
+      }
+      report += `\n==== 二、敏感词检测 ====\n`;
+      if (sensitive.totalHits === 0) {
+        report += `✅ 未检测到敏感/极限词\n`;
+      } else {
+        report += `⚠️ 共检测到 ${sensitive.totalHits} 处命中：\n`;
+        for (const [fieldName, hits] of Object.entries(sensitive.groupedHits)) {
+          const words = [...new Set(hits.map((h) => h.word))].join('、');
+          report += `  · ${fieldName}：${words}\n`;
+          hits.slice(0, 3).forEach((h) => {
+            report += `    → 上下文：…${h.context}…\n`;
+          });
+        }
+      }
+      report += `\n==== 三、发布内容（直接复制使用）====\n`;
+      report += `【标题】\n${copyData.titles[0]}\n\n`;
+      report += `【摘要】\n${copyData.summary}\n\n`;
+      report += `【Shownotes】\n${copyData.shownotes}\n\n`;
+      if (pKey === 'xiaohongshu') {
+        report += `【小红书正文】\n${copyData.socialPosts.xiaohongshu}\n\n`;
+      } else if (pKey === 'weibo') {
+        report += `【微博正文】\n${copyData.socialPosts.weibo}\n\n`;
+      } else if (pKey === 'official') {
+        report += `【公众号正文】\n${copyData.socialPosts.official}\n\n`;
+      } else if (pKey === 'xiaoyuzhou' || pKey === 'ximalaya') {
+        report += `【平台简介】\n${copyData.summary}\n\n${copyData.shownotes}\n\n`;
+      }
+      report += `【封面提示词】\n${copyData.coverPrompt}\n\n`;
+      report += `【章节时间线】\n${chapterTimeline}\n\n`;
+      report += `【金句集锦】\n${highlightsText}\n`;
+      return report;
+    }
+
+    const zip = new JSZip();
+
+    for (const platform of record.platforms) {
+      const folder = zip.folder(`${safeTitle}-${platformNameMap[platform] || platform}`);
+      if (!folder) continue;
+      let titlesContent = copy.titles.join('\n\n');
+      if (platform === 'xiaohongshu') {
+        titlesContent += '\n\n（小红书建议标题不超过20字，带emoji增强吸引力）';
+      } else if (platform === 'weibo') {
+        titlesContent += '\n\n（微博建议标题不超过30字，带话题标签）';
+      }
+      folder.file('01-标题.txt', titlesContent);
+      folder.file('02-摘要.txt', copy.summary);
+      folder.file('03-Shownotes.md', copy.shownotes);
+      if (platform === 'xiaohongshu') {
+        folder.file('04-小红书文案.txt', copy.socialPosts.xiaohongshu);
+      } else if (platform === 'weibo') {
+        folder.file('04-微博文案.txt', copy.socialPosts.weibo);
+      } else if (platform === 'official') {
+        folder.file('04-公众号文案.txt', copy.socialPosts.official);
+      } else if (platform === 'ximalaya' || platform === 'xiaoyuzhou') {
+        folder.file('04-平台简介.txt', copy.summary + '\n\n' + copy.shownotes);
+      }
+      folder.file('05-封面提示词.txt', copy.coverPrompt);
+      folder.file('06-章节时间线.txt', chapterTimeline);
+      folder.file('07-金句集锦.txt', highlightsText);
+      folder.file('08-检查报告.txt', buildPlatformReport(platform, copy, validations));
+    }
+
+    const common = zip.folder(`${safeTitle}-通用素材`);
+    if (common) {
+      common.file('完整逐字稿.txt', transcriptText);
+      common.file('章节时间线.txt', chapterTimeline);
+      common.file('金句集锦.txt', highlightsText);
+      let overall = `═══════════════════════════════════\n`;
+      overall += `  播客发布包 · 总检查交付单\n`;
+      overall += `═══════════════════════════════════\n\n`;
+      overall += `任务：${record.taskTitle}\n`;
+      overall += `导出时间：${new Date(record.exportedAt).toLocaleString()}\n`;
+      overall += `整体通过率：${record.passRate}%（${record.passedChecks}/${record.totalChecks}）\n`;
+      overall += `包含平台：${record.platforms.map((p) => platformNameMap[p] || p).join('、')}\n\n`;
+      overall += `──── 各平台问题汇总 ────\n\n`;
+      for (const pv of validations.filter((v) => record.platforms.includes(v.key))) {
+        const failFields = pv.fields.filter((f) => f.status !== 'pass');
+        const icon = failFields.some((f) => f.status === 'fail') ? '❌' : failFields.length > 0 ? '⚠️' : '✅';
+        overall += `${icon} 【${pv.label}】\n`;
+        if (failFields.length === 0) {
+          overall += `  · 全部字段通过校验\n`;
+        } else {
+          for (const f of failFields) {
+            const ic = f.status === 'fail' ? '·' : '∘';
+            overall += `  ${ic} ${f.label}：${f.message}\n`;
+          }
+        }
+        overall += `\n`;
+      }
+      const sensitiveOverall = scanAllContent(copy);
+      if (sensitiveOverall.totalHits > 0) {
+        overall += `──── 敏感/极限词命中 ────\n\n`;
+        for (const [fieldName, hits] of Object.entries(sensitiveOverall.groupedHits)) {
+          const words = [...new Set(hits.map((h) => h.word))].join('、');
+          overall += `  · ${fieldName}：${words}\n`;
+        }
+        overall += `\n`;
+      }
+      overall += `──── 通用检查项 ────\n\n`;
+      const checklist = get().checklists[record.taskId] || [];
+      for (const c of checklist) {
+        const ic = c.status === 'pass' ? '✅' : c.status === 'warning' ? '⚠️' : c.status === 'fail' ? '❌' : '⚪';
+        overall += `${ic} ${c.name}：${c.message}\n`;
+      }
+      common.file('总检查报告.txt', overall);
+    }
+
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `PodForge-${safeTitle}-${record.exportedAt.replace(/[:.]/g, '-')}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
+
+  exportZip: async (taskId, platforms) => {
+    if (platforms.length === 0) return;
+    const task = get().tasks.find((t) => t.id === taskId);
+    const copy = get().copies[taskId];
+    const transcript = get().transcripts[taskId] || [];
+    const chapters = get().chapters[taskId] || [];
+    const highlights = get().highlights[taskId] || [];
+    const checklist = get().checklists[taskId] || [];
+    if (!task || !copy) return;
+
+    const validations = get().validateAllPlatforms(taskId);
+    const safeTitle = task.title.replace(/[\\/:*?"<>|]/g, '_');
+
+    const platformNameMap: Record<string, string> = {
+      xiaoyuzhou: '小宇宙',
+      ximalaya: '喜马拉雅',
+      official: '公众号',
+      xiaohongshu: '小红书',
+      weibo: '微博',
+    };
+
+    const chapterTimeline = chapters
+      .map((c, i) => `${i + 1}. ${formatTime(c.startTime)} - ${c.title}（${c.keywords.join('、')}）\n   ${c.summary}`)
       .join('\n\n');
 
-    function generatePlatformReport(pKey: string): string {
+    const transcriptText = transcript
+      .map((s) => `[${formatTime(s.startTime)} - ${formatTime(s.endTime)}] ${s.speaker}${s.isMistake ? ' ⚠️' : ''}\n${s.text}`)
+      .join('\n\n');
+
+    const highlightsText = highlights
+      .map((h, i) => `${i + 1}. ${h.isFavorite ? '⭐ ' : ''}"${h.text}"\n   —— ${h.speaker} @ ${formatTime(h.startTime)}`)
+      .join('\n\n');
+
+    function buildPlatformReport(pKey: string): string {
       const v = validations.find((x) => x.key === pKey) || get().validatePlatform(taskId, pKey);
       const passCount = v.fields.filter((f) => f.status === 'pass').length;
       const warnCount = v.fields.filter((f) => f.status === 'warning').length;
       const failCount = v.fields.filter((f) => f.status === 'fail').length;
-      let report = `【${v.label}】发布校验报告\n`;
+      const sensitive = scanAllContent(copy);
+      let report = `【${v.label}】发布交付单\n`;
       report += `生成时间：${new Date().toLocaleString()}\n`;
       report += `任务标题：${task.title}\n`;
       report += `校验结果：${passCount} 通过 / ${warnCount} 警告 / ${failCount} 未通过\n\n`;
-      report += `==== 各字段校验 ====\n`;
+      report += `==== 一、字段校验结果 ====\n`;
       for (const f of v.fields) {
         const icon = f.status === 'pass' ? '✅' : f.status === 'warning' ? '⚠️' : '❌';
-        report += `${icon} ${f.label}：${f.message}\n`;
-        if (f.status !== 'pass' && f.value) {
-          const preview = f.value.length > 80 ? f.value.slice(0, 80) + '…' : f.value;
-          report += `   内容预览：${preview}\n`;
+        report += `${icon} ${f.label}（${f.length}/${f.max || '—'}）：${f.message}\n`;
+      }
+      report += `\n==== 二、敏感词检测 ====\n`;
+      if (sensitive.totalHits === 0) {
+        report += `✅ 未检测到敏感/极限词\n`;
+      } else {
+        report += `⚠️ 共检测到 ${sensitive.totalHits} 处命中：\n`;
+        for (const [fieldName, hits] of Object.entries(sensitive.groupedHits)) {
+          const words = [...new Set(hits.map((h) => h.word))].join('、');
+          report += `  · ${fieldName}：${words}\n`;
+          hits.slice(0, 3).forEach((h) => {
+            report += `    → 上下文：…${h.context}…\n`;
+          });
         }
       }
-      report += `\n==== 当前内容 ====\n`;
-      report += `标题：${copy.titles[0]}\n\n`;
-      report += `摘要：\n${copy.summary}\n\n`;
-      report += `Shownotes：\n${copy.shownotes}\n\n`;
+      report += `\n==== 三、发布内容（直接复制使用）====\n`;
+      report += `【标题】\n${copy.titles[0]}\n\n`;
+      report += `【摘要】\n${copy.summary}\n\n`;
+      report += `【Shownotes】\n${copy.shownotes}\n\n`;
       if (pKey === 'xiaohongshu') {
-        report += `小红书文案：\n${copy.socialPosts.xiaohongshu}\n\n`;
+        report += `【小红书正文】\n${copy.socialPosts.xiaohongshu}\n\n`;
       } else if (pKey === 'weibo') {
-        report += `微博文案：\n${copy.socialPosts.weibo}\n\n`;
+        report += `【微博正文】\n${copy.socialPosts.weibo}\n\n`;
       } else if (pKey === 'official') {
-        report += `公众号文案：\n${copy.socialPosts.official}\n\n`;
+        report += `【公众号正文】\n${copy.socialPosts.official}\n\n`;
+      } else if (pKey === 'xiaoyuzhou' || pKey === 'ximalaya') {
+        report += `【平台简介】\n${copy.summary}\n\n${copy.shownotes}\n\n`;
       }
-      report += `封面提示词：\n${copy.coverPrompt}\n\n`;
-      report += `章节时间线：\n${chapterTimeline}\n\n`;
-      report += `金句集锦：\n${highlightsText}\n`;
+      report += `【封面提示词】\n${copy.coverPrompt}\n\n`;
+      report += `【章节时间线】\n${chapterTimeline}\n\n`;
+      report += `【金句集锦】\n${highlightsText}\n`;
       return report;
     }
+
+    const zip = new JSZip();
 
     for (const platform of platforms) {
       const folder = zip.folder(`${safeTitle}-${platformNameMap[platform] || platform}`);
@@ -743,7 +927,7 @@ export const useStore = create<StoreState>((set, get) => ({
       folder.file('05-封面提示词.txt', copy.coverPrompt);
       folder.file('06-章节时间线.txt', chapterTimeline);
       folder.file('07-金句集锦.txt', highlightsText);
-      folder.file('08-检查报告.txt', generatePlatformReport(platform));
+      folder.file('08-检查报告.txt', buildPlatformReport(platform));
     }
 
     const common = zip.folder(`${safeTitle}-通用素材`);
@@ -751,26 +935,67 @@ export const useStore = create<StoreState>((set, get) => ({
       common.file('完整逐字稿.txt', transcriptText);
       common.file('章节时间线.txt', chapterTimeline);
       common.file('金句集锦.txt', highlightsText);
-      common.file(
-        '总检查报告.txt',
-        `任务：${task.title}\n导出时间：${new Date().toLocaleString()}\n\n` + checkReport,
-      );
+      let overall = `═══════════════════════════════════\n`;
+      overall += `  播客发布包 · 总检查交付单\n`;
+      overall += `═══════════════════════════════════\n\n`;
+      overall += `任务：${task.title}\n`;
+      overall += `导出时间：${new Date().toLocaleString()}\n`;
+      const passed = checklist.filter((c) => c.status === 'pass').length;
+      const passRate = checklist.length > 0 ? Math.round((passed / checklist.length) * 100) : 0;
+      overall += `整体通过率：${passRate}%（${passed}/${checklist.length}）\n`;
+      overall += `包含平台：${platforms.map((p) => platformNameMap[p] || p).join('、')}\n\n`;
+      overall += `──── 各平台问题汇总 ────\n\n`;
+      for (const pv of validations.filter((v) => platforms.includes(v.key))) {
+        const failFields = pv.fields.filter((f) => f.status !== 'pass');
+        const icon = failFields.some((f) => f.status === 'fail') ? '❌' : failFields.length > 0 ? '⚠️' : '✅';
+        overall += `${icon} 【${pv.label}】\n`;
+        if (failFields.length === 0) {
+          overall += `  · 全部字段通过校验\n`;
+        } else {
+          for (const f of failFields) {
+            const ic = f.status === 'fail' ? '·' : '∘';
+            overall += `  ${ic} ${f.label}：${f.message}\n`;
+          }
+        }
+        overall += `\n`;
+      }
+      const sensitiveOverall = scanAllContent(copy);
+      if (sensitiveOverall.totalHits > 0) {
+        overall += `──── 敏感/极限词命中 ────\n\n`;
+        for (const [fieldName, hits] of Object.entries(sensitiveOverall.groupedHits)) {
+          const words = [...new Set(hits.map((h) => h.word))].join('、');
+          overall += `  · ${fieldName}：${words}\n`;
+        }
+        overall += `\n`;
+      }
+      overall += `──── 通用检查项 ────\n\n`;
+      for (const c of checklist) {
+        const ic = c.status === 'pass' ? '✅' : c.status === 'warning' ? '⚠️' : c.status === 'fail' ? '❌' : '⚪';
+        overall += `${ic} ${c.name}：${c.message}\n`;
+      }
+      common.file('总检查报告.txt', overall);
     }
 
-    const passed = checklist.filter((c) => c.status === 'pass').length;
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const passedCount = checklist.filter((c) => c.status === 'pass').length;
+    const recordId = 'exp-' + Date.now();
     const exportRecord: ExportRecord = {
-      id: 'exp-' + Date.now(),
+      id: recordId,
       taskId,
       taskTitle: task.title,
-      platforms,
+      platforms: [...platforms],
       exportedAt: new Date().toISOString(),
-      passRate: checklist.length > 0 ? Math.round((passed / checklist.length) * 100) : 0,
+      passRate: checklist.length > 0 ? Math.round((passedCount / checklist.length) * 100) : 0,
       totalChecks: checklist.length,
-      passedChecks: passed,
+      passedChecks: passedCount,
+      fileSizeBytes: blob.size,
+      copySnapshot: JSON.parse(JSON.stringify(copy)),
+      chapterSnapshot: JSON.parse(JSON.stringify(chapters)),
+      highlightSnapshot: JSON.parse(JSON.stringify(highlights)),
+      validationSnapshot: JSON.parse(JSON.stringify(validations)),
     };
     get().addExportRecord(exportRecord);
 
-    const blob = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

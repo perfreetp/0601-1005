@@ -15,6 +15,9 @@ import {
   X,
   Search,
   Filter,
+  ArrowUpDown,
+  AlertOctagon,
+  Layers,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import type { Task, TaskStatus } from '../../shared/types';
@@ -91,6 +94,18 @@ interface PendingFile {
   duration: number;
 }
 
+const STEP_LABELS: Record<number, string> = {
+  1: '上传解析',
+  2: '音频转写',
+  3: '章节切分',
+  4: '亮点提取',
+  5: '文案生成',
+  6: '发布检查',
+};
+
+type SortKey = 'createdAt' | 'duration' | 'progress';
+type SortOrder = 'asc' | 'desc';
+
 export default function TasksPage() {
   const navigate = useNavigate();
   const { tasks, createTask, retryTask } = useStore();
@@ -99,15 +114,29 @@ export default function TasksPage() {
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | TaskStatus>('all');
+  const [sortKey, setSortKey] = useState<SortKey>('createdAt');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
 
-  const filteredTasks = tasks.filter((task) => {
-    const matchesSearch =
-      searchKeyword.trim() === '' ||
-      task.title.toLowerCase().includes(searchKeyword.toLowerCase()) ||
-      task.fileName.toLowerCase().includes(searchKeyword.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
+  const filteredTasks = tasks
+    .filter((task) => {
+      const matchesSearch =
+        searchKeyword.trim() === '' ||
+        task.title.toLowerCase().includes(searchKeyword.toLowerCase()) ||
+        task.fileName.toLowerCase().includes(searchKeyword.toLowerCase());
+      const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
+      return matchesSearch && matchesStatus;
+    })
+    .sort((a, b) => {
+      let diff = 0;
+      if (sortKey === 'createdAt') {
+        diff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      } else if (sortKey === 'duration') {
+        diff = a.duration - b.duration;
+      } else if (sortKey === 'progress') {
+        diff = a.progress - b.progress;
+      }
+      return sortOrder === 'asc' ? diff : -diff;
+    });
 
   const statusFilters: Array<{ key: 'all' | TaskStatus; label: string }> = [
     { key: 'all', label: '全部' },
@@ -115,6 +144,21 @@ export default function TasksPage() {
     { key: 'completed', label: '已完成' },
     { key: 'failed', label: '失败' },
   ];
+
+  const sortOptions: Array<{ key: SortKey; label: string }> = [
+    { key: 'createdAt', label: '创建时间' },
+    { key: 'duration', label: '音频时长' },
+    { key: 'progress', label: '任务进度' },
+  ];
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortOrder('desc');
+    }
+  };
 
   const addPendingFiles = useCallback((files: FileList | File[]) => {
     const arr = Array.from(files);
@@ -302,7 +346,7 @@ export default function TasksPage() {
 
         <div className="glass-card overflow-hidden">
           <div className="px-6 py-4 border-b border-stone-200/60">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
               <h3 className="text-lg font-semibold text-stone-800">任务队列</h3>
               <div className="flex items-center gap-3 flex-wrap">
                 <div className="relative">
@@ -332,13 +376,33 @@ export default function TasksPage() {
                     </button>
                   ))}
                 </div>
+                <div className="flex items-center gap-1 border-l border-stone-200 pl-3">
+                  <ArrowUpDown className="w-4 h-4 text-stone-400" />
+                  {sortOptions.map((opt) => (
+                    <button
+                      key={opt.key}
+                      onClick={() => toggleSort(opt.key)}
+                      className={cn(
+                        'px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1',
+                        sortKey === opt.key
+                          ? 'bg-stone-800 text-white'
+                          : 'bg-stone-100 text-stone-600 hover:bg-stone-200',
+                      )}
+                    >
+                      {opt.label}
+                      {sortKey === opt.key && (
+                        <span className="text-[10px] opacity-70">
+                          {sortOrder === 'desc' ? '↓' : '↑'}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-            {searchKeyword || statusFilter !== 'all' ? (
-              <p className="text-xs text-stone-500 mt-3">
-                共找到 <span className="font-semibold text-brand-600">{filteredTasks.length}</span> 条任务
-              </p>
-            ) : null}
+            <p className="text-xs text-stone-500 mt-3">
+              共 <span className="font-semibold text-brand-600">{filteredTasks.length}</span> 条任务
+            </p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -347,8 +411,8 @@ export default function TasksPage() {
                   <th className="text-left py-3 px-6 text-sm font-medium text-stone-500">任务名</th>
                   <th className="text-left py-3 px-6 text-sm font-medium text-stone-500">文件</th>
                   <th className="text-left py-3 px-6 text-sm font-medium text-stone-500">时长</th>
-                  <th className="text-left py-3 px-6 text-sm font-medium text-stone-500">状态</th>
-                  <th className="text-left py-3 px-6 text-sm font-medium text-stone-500 w-48">进度</th>
+                  <th className="text-left py-3 px-6 text-sm font-medium text-stone-500">状态 / 当前阶段</th>
+                  <th className="text-left py-3 px-6 text-sm font-medium text-stone-500 w-56">进度</th>
                   <th className="text-left py-3 px-6 text-sm font-medium text-stone-500">创建时间</th>
                   <th className="text-right py-3 px-6 text-sm font-medium text-stone-500">操作</th>
                 </tr>
@@ -364,94 +428,114 @@ export default function TasksPage() {
                     </td>
                   </tr>
                 ) : (
-                  filteredTasks.map((task, idx) => (
-                  <tr
-                    key={task.id}
-                    onClick={() => handleRowClick(task)}
-                    className={cn(
-                      'transition-all duration-200',
-                      task.status === 'completed'
-                        ? 'cursor-pointer hover:bg-brand-50/30'
-                        : 'cursor-default',
-                    )}
-                    style={{ animationDelay: `${idx * 50}ms` }}
-                  >
-                    <td className="py-4 px-6">
-                      <p className="font-medium text-stone-800 line-clamp-1">{task.title}</p>
-                    </td>
-                    <td className="py-4 px-6">
-                      <p className="text-sm text-stone-600 line-clamp-1">{task.fileName}</p>
-                      <p className="text-xs text-stone-400 mt-0.5">{formatFileSize(task.fileSize)}</p>
-                    </td>
-                    <td className="py-4 px-6">
-                      <span className="flex items-center gap-1.5 text-sm text-stone-600">
-                        <Clock className="w-4 h-4 text-stone-400" />
-                        {formatDuration(task.duration)}
-                      </span>
-                    </td>
-                    <td className="py-4 px-6">
-                      <StatusBadge status={task.status} />
-                      {task.error && (
-                        <p className="text-xs text-rose-500 mt-1 max-w-[200px] line-clamp-1">
-                          {task.error}
-                        </p>
-                      )}
-                    </td>
-                    <td className="py-4 px-6">
-                      <div className="flex items-center gap-3">
-                        <div className="progress-bar flex-1">
-                          <div
-                            className="progress-fill"
-                            style={{
-                              width: `${task.progress}%`,
-                              background:
-                                task.status === 'failed'
-                                  ? 'linear-gradient(135deg, #f43f5e 0%, #fb7185 100%)'
-                                  : undefined,
-                            }}
-                          />
-                        </div>
-                        <span className="text-sm font-medium text-stone-700 w-10 text-right">
-                          {task.progress}%
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-4 px-6">
-                      <span className="flex items-center gap-1.5 text-sm text-stone-600">
-                        <Calendar className="w-4 h-4 text-stone-400" />
-                        {formatDate(task.createdAt)}
-                      </span>
-                    </td>
-                    <td className="py-4 px-6">
-                      <div className="flex items-center justify-end gap-2">
-                        {task.status === 'failed' && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              retryTask(task.id);
-                            }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-amber-100 text-amber-700 hover:bg-amber-200 transition-all"
-                          >
-                            <RefreshCw className="w-4 h-4" />
-                            重试
-                          </button>
+                  filteredTasks.map((task, idx) => {
+                    const stepLabel = STEP_LABELS[task.currentStep] || '处理中';
+                    return (
+                      <tr
+                        key={task.id}
+                        onClick={() => handleRowClick(task)}
+                        className={cn(
+                          'transition-all duration-200',
+                          task.status === 'completed'
+                            ? 'cursor-pointer hover:bg-brand-50/30'
+                            : task.status === 'failed'
+                              ? 'bg-rose-50/30'
+                              : 'cursor-default',
                         )}
-                        {task.status === 'completed' && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              navigate(`/transcript/${task.id}`);
-                            }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-gradient-brand text-white hover:shadow-lg hover:shadow-brand-700/30 transition-all"
-                          >
-                            进入
-                            <ArrowRight className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                  ))
+                        style={{ animationDelay: `${idx * 50}ms` }}
+                      >
+                        <td className="py-4 px-6">
+                          <p className="font-medium text-stone-800 line-clamp-1">{task.title}</p>
+                        </td>
+                        <td className="py-4 px-6">
+                          <p className="text-sm text-stone-600 line-clamp-1">{task.fileName}</p>
+                          <p className="text-xs text-stone-400 mt-0.5">{formatFileSize(task.fileSize)}</p>
+                        </td>
+                        <td className="py-4 px-6">
+                          <span className="flex items-center gap-1.5 text-sm text-stone-600">
+                            <Clock className="w-4 h-4 text-stone-400" />
+                            {formatDuration(task.duration)}
+                          </span>
+                        </td>
+                        <td className="py-4 px-6">
+                          <StatusBadge status={task.status} />
+                          {task.status === 'processing' && (
+                            <div className="flex items-center gap-1 mt-2 text-xs text-brand-600">
+                              <Layers className="w-3 h-3" />
+                              <span className="font-medium">{stepLabel}</span>
+                              <span className="text-stone-400">（第 {task.currentStep}/6 步）</span>
+                            </div>
+                          )}
+                          {task.status === 'failed' && task.error && (
+                            <div className="mt-2 p-2 rounded-lg bg-rose-100/60 border border-rose-200">
+                              <div className="flex items-start gap-1.5">
+                                <AlertOctagon className="w-3.5 h-3.5 text-rose-600 mt-0.5 flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-rose-700">失败原因</p>
+                                  <p className="text-xs text-rose-600 mt-0.5 line-clamp-2">
+                                    {task.error}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-4 px-6">
+                          <div className="flex items-center gap-3">
+                            <div className="progress-bar flex-1">
+                              <div
+                                className="progress-fill"
+                                style={{
+                                  width: `${task.progress}%`,
+                                  background:
+                                    task.status === 'failed'
+                                      ? 'linear-gradient(135deg, #f43f5e 0%, #fb7185 100%)'
+                                      : undefined,
+                                }}
+                              />
+                            </div>
+                            <span className="text-sm font-medium text-stone-700 w-10 text-right">
+                              {task.progress}%
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-4 px-6">
+                          <span className="flex items-center gap-1.5 text-sm text-stone-600">
+                            <Calendar className="w-4 h-4 text-stone-400" />
+                            {formatDate(task.createdAt)}
+                          </span>
+                        </td>
+                        <td className="py-4 px-6">
+                          <div className="flex items-center justify-end gap-2">
+                            {task.status === 'failed' && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  retryTask(task.id);
+                                }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-amber-100 text-amber-700 hover:bg-amber-200 transition-all shadow-sm hover:shadow"
+                              >
+                                <RefreshCw className="w-4 h-4" />
+                                重试
+                              </button>
+                            )}
+                            {task.status === 'completed' && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/transcript/${task.id}`);
+                                }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-gradient-brand text-white hover:shadow-lg hover:shadow-brand-700/30 transition-all"
+                              >
+                                进入
+                                <ArrowRight className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
