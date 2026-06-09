@@ -218,11 +218,27 @@ export default function TasksPage() {
     setPendingFiles([]);
   }, [pendingFiles, createTask]);
 
+  const STEP_ROUTE_MAP: Record<number, string> = {
+    1: '/transcript',
+    2: '/transcript',
+    3: '/chapters',
+    4: '/highlights',
+    5: '/copy',
+    6: '/publish',
+  };
+
+  const getRouteForTask = (task: Task) => {
+    if (task.status === 'completed') return `/publish/${task.id}`;
+    if (task.status === 'failed') return null;
+    if (task.status === 'pending') return `/transcript/${task.id}`;
+    const route = STEP_ROUTE_MAP[task.currentStep] || '/transcript';
+    return `${route}/${task.id}`;
+  };
+
   const handleRowClick = useCallback(
     (task: Task) => {
-      if (task.status === 'completed') {
-        navigate(`/transcript/${task.id}`);
-      }
+      const route = getRouteForTask(task);
+      if (route) navigate(route);
     },
     [navigate],
   );
@@ -436,11 +452,9 @@ export default function TasksPage() {
                         onClick={() => handleRowClick(task)}
                         className={cn(
                           'transition-all duration-200',
-                          task.status === 'completed'
-                            ? 'cursor-pointer hover:bg-brand-50/30'
-                            : task.status === 'failed'
-                              ? 'bg-rose-50/30'
-                              : 'cursor-default',
+                          task.status === 'failed'
+                            ? 'bg-rose-50/30 cursor-default'
+                            : 'cursor-pointer hover:bg-brand-50/30',
                         )}
                         style={{ animationDelay: `${idx * 50}ms` }}
                       >
@@ -519,15 +533,20 @@ export default function TasksPage() {
                                 重试
                               </button>
                             )}
-                            {task.status === 'completed' && (
+                            {task.status !== 'failed' && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  navigate(`/transcript/${task.id}`);
+                                  const route = getRouteForTask(task);
+                                  if (route) navigate(route);
                                 }}
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-gradient-brand text-white hover:shadow-lg hover:shadow-brand-700/30 transition-all"
                               >
-                                进入
+                                {task.status === 'processing'
+                                  ? `前往 ${STEP_LABELS[task.currentStep] || '处理中'}`
+                                  : task.status === 'pending'
+                                    ? '开始处理'
+                                    : '进入'}
                                 <ArrowRight className="w-4 h-4" />
                               </button>
                             )}

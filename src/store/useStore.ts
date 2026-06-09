@@ -35,8 +35,20 @@ export interface ExportRecord {
   copySnapshot: CopyContent;
   chapterSnapshot: Chapter[];
   highlightSnapshot: Highlight[];
+  transcriptSnapshot: import('../../shared/types').TranscriptSegment[];
+  checklistSnapshot: import('../../shared/types').CheckItem[];
   validationSnapshot: PlatformValidation[];
+  fileManifest: string[];
+  scheduleInfo?: {
+    plannedPublishAt?: string;
+    operator?: string;
+    platformLinks?: Record<string, { placeholder?: string; actual?: string }>;
+  };
+  deliverStatus: 'draft' | 'delivered' | 'published';
+  operatorNote: string;
 }
+
+export type DeliverStatus = 'draft' | 'delivered' | 'published';
 
 type PersistedState = {
   tasks: Task[];
@@ -117,10 +129,12 @@ interface StoreState extends PersistedState {
 
   runChecklist: (taskId: string) => Promise<void>;
 
-  exportZip: (taskId: string, platforms: string[]) => Promise<void>;
+  exportZip: (taskId: string, platforms: string[], schedule?: { plannedPublishAt?: string; operator?: string; platformLinks?: Record<string, { placeholder?: string; actual?: string }> }) => Promise<void>;
   addExportRecord: (record: ExportRecord) => void;
   deleteExportRecord: (recordId: string) => void;
-  downloadExportRecord: (recordId: string) => Promise<void>;
+  downloadExportRecord: (recordId: string) => Promise<{ ok: boolean; reason?: string }>;
+  updateExportRecord: (recordId: string, updates: Partial<Pick<ExportRecord, 'operatorNote' | 'deliverStatus' | 'scheduleInfo'>>) => void;
+  isExportRecordComplete: (recordId: string) => { ok: boolean; missing: string[] };
 }
 
 function formatTime(seconds: number): string {
@@ -654,15 +668,40 @@ export const useStore = create<StoreState>((set, get) => ({
     get().persist();
   },
 
+  updateExportRecord: (recordId, updates) => {
+    set((s) => ({
+      exports: s.exports.map((e) => (e.id === recordId ? { ...e, ...updates } : e)),
+    }));
+    get().persist();
+  },
+
+  isExportRecordComplete: (recordId) => {
+    const record = get().exports.find((e) => e.id === recordId);
+    if (!record) return { ok: false, missing: ['记录不存在'] };
+    const missing: string[] = [];
+    if (!record.copySnapshot || !record.copySnapshot.titles) missing.push('文案快照');
+    if (!Array.isArray(record.chapterSnapshot)) missing.push('章节快照');
+    if (!Array.isArray(record.highlightSnapshot)) missing.push('金句快照');
+    if (!Array.isArray(record.transcriptSnapshot)) missing.push('逐字稿快照');
+    if (!Array.isArray(record.checklistSnapshot)) missing.push('检查项快照');
+    if (!Array.isArray(record.validationSnapshot)) missing.push('校验结果快照');
+    return { ok: missing.length === 0, missing };
+  },
+
   downloadExportRecord: async (recordId) => {
     const record = get().exports.find((e) => e.id === recordId);
-    if (!record) return;
+    if (!record) return { ok: false, reason: '记录不存在' };
 
-    const task = get().tasks.find((t) => t.id === record.taskId);
-    const transcript = get().transcripts[record.taskId] || [];
+    const integrity = get().isExportRecordComplete(recordId);
+    if (!integrity.ok) {
+      return { ok: false, reason: `该历史记录缺少数据快照（${integrity.missing.join('、')}），请重新导出或使用当前内容生成草稿包。` };
+    }
+
     const copy = record.copySnapshot;
     const chapters = record.chapterSnapshot;
     const highlights = record.highlightSnapshot;
+    const transcript = record.transcriptSnapshot;
+    const checklist = record.checklistSnapshot;
     const validations = record.validationSnapshot;
     const safeTitle = record.taskTitle.replace(/[\\/:*?"<>|]/g, '_');
 
@@ -734,9 +773,11 @@ export const useStore = create<StoreState>((set, get) => ({
     }
 
     const zip = new JSZip();
+    const manifest: string[] = [];
 
     for (const platform of record.platforms) {
-      const folder = zip.folder(`${safeTitle}-${platformNameMap[platform] || platform}`);
+      const folderName = `${safeTitle}-${platformNameMap[platform] || platform}`;
+      const folder = zip.folder(folderName);
       if (!folder) continue;
       let titlesContent = copy.titles.join('\n\n');
       if (platform === 'xiaohongshu') {
@@ -745,28 +786,43 @@ export const useStore = create<StoreState>((set, get) => ({
         titlesContent += '\n\n（微博建议标题不超过30字，带话题标签）';
       }
       folder.file('01-标题.txt', titlesContent);
+      manifest.push(`${folderName}/01-标题.txt`);
       folder.file('02-摘要.txt', copy.summary);
+      manifest.push(`${folderName}/02-摘要.txt`);
       folder.file('03-Shownotes.md', copy.shownotes);
+      manifest.push(`${folderName}/03-Shownotes.md`);
       if (platform === 'xiaohongshu') {
         folder.file('04-小红书文案.txt', copy.socialPosts.xiaohongshu);
+        manifest.push(`${folderName}/04-小红书文案.txt`);
       } else if (platform === 'weibo') {
         folder.file('04-微博文案.txt', copy.socialPosts.weibo);
+        manifest.push(`${folderName}/04-微博文案.txt`);
       } else if (platform === 'official') {
         folder.file('04-公众号文案.txt', copy.socialPosts.official);
+        manifest.push(`${folderName}/04-公众号文案.txt`);
       } else if (platform === 'ximalaya' || platform === 'xiaoyuzhou') {
         folder.file('04-平台简介.txt', copy.summary + '\n\n' + copy.shownotes);
+        manifest.push(`${folderName}/04-平台简介.txt`);
       }
       folder.file('05-封面提示词.txt', copy.coverPrompt);
+      manifest.push(`${folderName}/05-封面提示词.txt`);
       folder.file('06-章节时间线.txt', chapterTimeline);
+      manifest.push(`${folderName}/06-章节时间线.txt`);
       folder.file('07-金句集锦.txt', highlightsText);
+      manifest.push(`${folderName}/07-金句集锦.txt`);
       folder.file('08-检查报告.txt', buildPlatformReport(platform, copy, validations));
+      manifest.push(`${folderName}/08-检查报告.txt`);
     }
 
-    const common = zip.folder(`${safeTitle}-通用素材`);
+    const commonFolderName = `${safeTitle}-通用素材`;
+    const common = zip.folder(commonFolderName);
     if (common) {
       common.file('完整逐字稿.txt', transcriptText);
+      manifest.push(`${commonFolderName}/完整逐字稿.txt`);
       common.file('章节时间线.txt', chapterTimeline);
+      manifest.push(`${commonFolderName}/章节时间线.txt`);
       common.file('金句集锦.txt', highlightsText);
+      manifest.push(`${commonFolderName}/金句集锦.txt`);
       let overall = `═══════════════════════════════════\n`;
       overall += `  播客发布包 · 总检查交付单\n`;
       overall += `═══════════════════════════════════\n\n`;
@@ -799,12 +855,20 @@ export const useStore = create<StoreState>((set, get) => ({
         overall += `\n`;
       }
       overall += `──── 通用检查项 ────\n\n`;
-      const checklist = get().checklists[record.taskId] || [];
       for (const c of checklist) {
         const ic = c.status === 'pass' ? '✅' : c.status === 'warning' ? '⚠️' : c.status === 'fail' ? '❌' : '⚪';
         overall += `${ic} ${c.name}：${c.message}\n`;
       }
       common.file('总检查报告.txt', overall);
+      manifest.push(`${commonFolderName}/总检查报告.txt`);
+
+      let manifestText = `PodForge 发布包文件清单\n`;
+      manifestText += `生成时间：${new Date(record.exportedAt).toLocaleString()}\n`;
+      manifestText += `任务：${record.taskTitle}\n`;
+      manifestText += `共 ${manifest.length} 个文件\n\n`;
+      manifestText += manifest.map((m, i) => `${(i + 1).toString().padStart(3, '0')}. ${m}`).join('\n');
+      common.file('文件清单.txt', manifestText);
+      manifest.push(`${commonFolderName}/文件清单.txt`);
     }
 
     const blob = await zip.generateAsync({ type: 'blob' });
@@ -816,9 +880,10 @@ export const useStore = create<StoreState>((set, get) => ({
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    return { ok: true };
   },
 
-  exportZip: async (taskId, platforms) => {
+  exportZip: async (taskId, platforms, schedule) => {
     if (platforms.length === 0) return;
     const task = get().tasks.find((t) => t.id === taskId);
     const copy = get().copies[taskId];
@@ -899,9 +964,11 @@ export const useStore = create<StoreState>((set, get) => ({
     }
 
     const zip = new JSZip();
+    const manifest: string[] = [];
 
     for (const platform of platforms) {
-      const folder = zip.folder(`${safeTitle}-${platformNameMap[platform] || platform}`);
+      const folderName = `${safeTitle}-${platformNameMap[platform] || platform}`;
+      const folder = zip.folder(folderName);
       if (!folder) continue;
 
       let titlesContent = copy.titles.join('\n\n');
@@ -911,35 +978,53 @@ export const useStore = create<StoreState>((set, get) => ({
         titlesContent += '\n\n（微博建议标题不超过30字，带话题标签）';
       }
       folder.file('01-标题.txt', titlesContent);
+      manifest.push(`${folderName}/01-标题.txt`);
       folder.file('02-摘要.txt', copy.summary);
+      manifest.push(`${folderName}/02-摘要.txt`);
       folder.file('03-Shownotes.md', copy.shownotes);
+      manifest.push(`${folderName}/03-Shownotes.md`);
 
       if (platform === 'xiaohongshu') {
         folder.file('04-小红书文案.txt', copy.socialPosts.xiaohongshu);
+        manifest.push(`${folderName}/04-小红书文案.txt`);
       } else if (platform === 'weibo') {
         folder.file('04-微博文案.txt', copy.socialPosts.weibo);
+        manifest.push(`${folderName}/04-微博文案.txt`);
       } else if (platform === 'official') {
         folder.file('04-公众号文案.txt', copy.socialPosts.official);
+        manifest.push(`${folderName}/04-公众号文案.txt`);
       } else if (platform === 'ximalaya' || platform === 'xiaoyuzhou') {
         folder.file('04-平台简介.txt', copy.summary + '\n\n' + copy.shownotes);
+        manifest.push(`${folderName}/04-平台简介.txt`);
       }
 
       folder.file('05-封面提示词.txt', copy.coverPrompt);
+      manifest.push(`${folderName}/05-封面提示词.txt`);
       folder.file('06-章节时间线.txt', chapterTimeline);
+      manifest.push(`${folderName}/06-章节时间线.txt`);
       folder.file('07-金句集锦.txt', highlightsText);
+      manifest.push(`${folderName}/07-金句集锦.txt`);
       folder.file('08-检查报告.txt', buildPlatformReport(platform));
+      manifest.push(`${folderName}/08-检查报告.txt`);
     }
 
-    const common = zip.folder(`${safeTitle}-通用素材`);
+    const commonFolderName = `${safeTitle}-通用素材`;
+    const common = zip.folder(commonFolderName);
+    const exportedAt = new Date().toISOString();
     if (common) {
       common.file('完整逐字稿.txt', transcriptText);
+      manifest.push(`${commonFolderName}/完整逐字稿.txt`);
       common.file('章节时间线.txt', chapterTimeline);
+      manifest.push(`${commonFolderName}/章节时间线.txt`);
       common.file('金句集锦.txt', highlightsText);
+      manifest.push(`${commonFolderName}/金句集锦.txt`);
       let overall = `═══════════════════════════════════\n`;
       overall += `  播客发布包 · 总检查交付单\n`;
       overall += `═══════════════════════════════════\n\n`;
       overall += `任务：${task.title}\n`;
-      overall += `导出时间：${new Date().toLocaleString()}\n`;
+      overall += `导出时间：${new Date(exportedAt).toLocaleString()}\n`;
+      if (schedule?.operator) overall += `导出负责人：${schedule.operator}\n`;
+      if (schedule?.plannedPublishAt) overall += `计划发布时间：${new Date(schedule.plannedPublishAt).toLocaleString()}\n`;
       const passed = checklist.filter((c) => c.status === 'pass').length;
       const passRate = checklist.length > 0 ? Math.round((passed / checklist.length) * 100) : 0;
       overall += `整体通过率：${passRate}%（${passed}/${checklist.length}）\n`;
@@ -949,6 +1034,9 @@ export const useStore = create<StoreState>((set, get) => ({
         const failFields = pv.fields.filter((f) => f.status !== 'pass');
         const icon = failFields.some((f) => f.status === 'fail') ? '❌' : failFields.length > 0 ? '⚠️' : '✅';
         overall += `${icon} 【${pv.label}】\n`;
+        if (schedule?.platformLinks?.[pv.key]?.placeholder) {
+          overall += `  · 占位发布链接：${schedule.platformLinks[pv.key].placeholder}\n`;
+        }
         if (failFields.length === 0) {
           overall += `  · 全部字段通过校验\n`;
         } else {
@@ -974,6 +1062,15 @@ export const useStore = create<StoreState>((set, get) => ({
         overall += `${ic} ${c.name}：${c.message}\n`;
       }
       common.file('总检查报告.txt', overall);
+      manifest.push(`${commonFolderName}/总检查报告.txt`);
+
+      let manifestText = `PodForge 发布包文件清单\n`;
+      manifestText += `生成时间：${new Date(exportedAt).toLocaleString()}\n`;
+      manifestText += `任务：${task.title}\n`;
+      manifestText += `共 ${manifest.length} 个文件\n\n`;
+      manifestText += manifest.map((m, i) => `${(i + 1).toString().padStart(3, '0')}. ${m}`).join('\n');
+      common.file('文件清单.txt', manifestText);
+      manifest.push(`${commonFolderName}/文件清单.txt`);
     }
 
     const blob = await zip.generateAsync({ type: 'blob' });
@@ -984,7 +1081,7 @@ export const useStore = create<StoreState>((set, get) => ({
       taskId,
       taskTitle: task.title,
       platforms: [...platforms],
-      exportedAt: new Date().toISOString(),
+      exportedAt,
       passRate: checklist.length > 0 ? Math.round((passedCount / checklist.length) * 100) : 0,
       totalChecks: checklist.length,
       passedChecks: passedCount,
@@ -992,14 +1089,26 @@ export const useStore = create<StoreState>((set, get) => ({
       copySnapshot: JSON.parse(JSON.stringify(copy)),
       chapterSnapshot: JSON.parse(JSON.stringify(chapters)),
       highlightSnapshot: JSON.parse(JSON.stringify(highlights)),
+      transcriptSnapshot: JSON.parse(JSON.stringify(transcript)),
+      checklistSnapshot: JSON.parse(JSON.stringify(checklist)),
       validationSnapshot: JSON.parse(JSON.stringify(validations)),
+      fileManifest: [...manifest],
+      scheduleInfo: schedule
+        ? {
+            plannedPublishAt: schedule.plannedPublishAt,
+            operator: schedule.operator,
+            platformLinks: schedule.platformLinks ? JSON.parse(JSON.stringify(schedule.platformLinks)) : undefined,
+          }
+        : undefined,
+      deliverStatus: 'draft',
+      operatorNote: '',
     };
     get().addExportRecord(exportRecord);
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `PodForge-${safeTitle}-${Date.now()}.zip`;
+    a.download = `PodForge-${safeTitle}-${exportedAt.replace(/[:.]/g, '-')}.zip`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
