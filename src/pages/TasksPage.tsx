@@ -13,6 +13,8 @@ import {
   XCircle,
   Circle,
   X,
+  Search,
+  Filter,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import type { Task, TaskStatus } from '../../shared/types';
@@ -95,6 +97,24 @@ export default function TasksPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | TaskStatus>('all');
+
+  const filteredTasks = tasks.filter((task) => {
+    const matchesSearch =
+      searchKeyword.trim() === '' ||
+      task.title.toLowerCase().includes(searchKeyword.toLowerCase()) ||
+      task.fileName.toLowerCase().includes(searchKeyword.toLowerCase());
+    const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
+
+  const statusFilters: Array<{ key: 'all' | TaskStatus; label: string }> = [
+    { key: 'all', label: '全部' },
+    { key: 'processing', label: '处理中' },
+    { key: 'completed', label: '已完成' },
+    { key: 'failed', label: '失败' },
+  ];
 
   const addPendingFiles = useCallback((files: FileList | File[]) => {
     const arr = Array.from(files);
@@ -282,7 +302,43 @@ export default function TasksPage() {
 
         <div className="glass-card overflow-hidden">
           <div className="px-6 py-4 border-b border-stone-200/60">
-            <h3 className="text-lg font-semibold text-stone-800">任务队列</h3>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <h3 className="text-lg font-semibold text-stone-800">任务队列</h3>
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
+                  <input
+                    type="text"
+                    value={searchKeyword}
+                    onChange={(e) => setSearchKeyword(e.target.value)}
+                    placeholder="搜索任务名或文件名..."
+                    className="input-base pl-9 pr-4 py-2 text-sm w-64"
+                  />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Filter className="w-4 h-4 text-stone-400" />
+                  {statusFilters.map((f) => (
+                    <button
+                      key={f.key}
+                      onClick={() => setStatusFilter(f.key)}
+                      className={cn(
+                        'px-3 py-1.5 rounded-full text-sm font-medium transition-all',
+                        statusFilter === f.key
+                          ? 'bg-gradient-brand text-white shadow-md shadow-brand-700/20'
+                          : 'bg-stone-100 text-stone-600 hover:bg-stone-200',
+                      )}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            {searchKeyword || statusFilter !== 'all' ? (
+              <p className="text-xs text-stone-500 mt-3">
+                共找到 <span className="font-semibold text-brand-600">{filteredTasks.length}</span> 条任务
+              </p>
+            ) : null}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -298,7 +354,17 @@ export default function TasksPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100">
-                {tasks.map((task, idx) => (
+                {filteredTasks.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-16 text-center">
+                      <div className="text-stone-400">
+                        <Search className="w-10 h-10 mx-auto mb-3 opacity-40" />
+                        <p>没有找到匹配的任务</p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredTasks.map((task, idx) => (
                   <tr
                     key={task.id}
                     onClick={() => handleRowClick(task)}
@@ -385,7 +451,8 @@ export default function TasksPage() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  ))
+                )}
               </tbody>
             </table>
           </div>

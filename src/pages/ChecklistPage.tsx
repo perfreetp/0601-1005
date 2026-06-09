@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   CheckCircle2,
   AlertTriangle,
@@ -14,10 +14,17 @@ import {
   Podcast,
   BookOpen,
   Heart,
+  Download,
+  Calendar,
+  FileText,
+  CheckCircle,
+  XOctagon,
+  AlertCircle,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { cn } from '@/lib/utils';
 import type { CheckStatus } from '../../shared/types';
+import type { PlatformValidation } from '../store/useStore';
 
 const platforms = [
   { key: 'xiaoyuzhou', label: '小宇宙', icon: Radio, color: 'text-orange-500' },
@@ -25,6 +32,38 @@ const platforms = [
   { key: 'official', label: '公众号', icon: BookOpen, color: 'text-emerald-600' },
   { key: 'xiaohongshu', label: '小红书', icon: Heart, color: 'text-rose-500' },
 ];
+
+function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getFieldStatusIcon(status: 'pass' | 'warning' | 'fail') {
+  switch (status) {
+    case 'pass':
+      return <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />;
+    case 'warning':
+      return <AlertCircle className="w-3.5 h-3.5 text-amber-500" />;
+    case 'fail':
+      return <XOctagon className="w-3.5 h-3.5 text-rose-500" />;
+  }
+}
+
+function getFieldStatusColor(status: 'pass' | 'warning' | 'fail') {
+  switch (status) {
+    case 'pass':
+      return 'bg-emerald-500';
+    case 'warning':
+      return 'bg-amber-500';
+    case 'fail':
+      return 'bg-rose-500';
+  }
+}
 
 export default function ChecklistPage() {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
@@ -34,9 +73,21 @@ export default function ChecklistPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
-  const { checklists, currentTaskId, runChecklist, exportZip } = useStore();
+  const { checklists, currentTaskId, runChecklist, exportZip, validateAllPlatforms, exports, tasks } = useStore();
   const taskId = currentTaskId || 'task-002';
   const items = checklists[taskId] || [];
+
+  const platformValidations = useMemo(() => {
+    return validateAllPlatforms(taskId);
+  }, [validateAllPlatforms, taskId, checklists]);
+
+  const taskExports = useMemo(() => {
+    return exports.filter((e) => e.taskId === taskId);
+  }, [exports, taskId]);
+
+  const allExports = useMemo(() => {
+    return exports.slice(0, 20);
+  }, [exports]);
 
   const toggleExpand = (id: string) => {
     setExpandedItems((prev) => {
@@ -379,13 +430,256 @@ export default function ChecklistPage() {
     </div>
   );
 
+  const renderPlatformPreview = () => {
+    return (
+      <div className="space-y-4 mb-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-stone-900 flex items-center gap-2">
+              <FileText className="w-5 h-5 text-brand-500" />
+              平台发布预览
+            </h2>
+            <p className="text-sm text-stone-500 mt-1">各平台字段校验与字数检查，草稿状态不影响导出</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-5">
+          {platformValidations.map((validation) => {
+            const platformMeta = platforms.find((p) => p.key === validation.key);
+            const Icon = platformMeta?.icon || FileText;
+            const iconColor = platformMeta?.color || 'text-brand-500';
+            const passCount = validation.fields.filter((f) => f.status === 'pass').length;
+            const warnCount = validation.fields.filter((f) => f.status === 'warning').length;
+            const failCount = validation.fields.filter((f) => f.status === 'fail').length;
+
+            return (
+              <div key={validation.key} className="glass-card p-5 card-hover">
+                <div className="flex items-center justify-between mb-4 pb-3 border-b border-stone-100">
+                  <div className="flex items-center gap-2">
+                    <div className="w-9 h-9 rounded-xl bg-stone-50 flex items-center justify-center">
+                      <Icon className={cn('w-5 h-5', iconColor)} />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-stone-800">{validation.label}</h3>
+                      <div className="flex items-center gap-2 text-xs mt-0.5">
+                        <span className="text-emerald-600">{passCount} 通过</span>
+                        {warnCount > 0 && <span className="text-amber-600">{warnCount} 警告</span>}
+                        {failCount > 0 && <span className="text-rose-600">{failCount} 未通过</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    className={cn(
+                      'w-2.5 h-2.5 rounded-full',
+                      failCount > 0 ? 'bg-rose-500' : warnCount > 0 ? 'bg-amber-500' : 'bg-emerald-500',
+                    )}
+                  />
+                </div>
+
+                <div className="space-y-3">
+                  {validation.fields.map((field, fIdx) => {
+                    const percentage =
+                      field.max > 0 ? Math.min(100, Math.round((field.length / field.max) * 100)) : 0;
+
+                    return (
+                      <div key={fIdx} className="space-y-1.5">
+                        <div className="flex items-center justify-between text-sm">
+                          <div className="flex items-center gap-1.5">
+                            {getFieldStatusIcon(field.status)}
+                            <span className="font-medium text-stone-700">{field.label}</span>
+                            <span className="text-stone-400 text-xs">
+                              {field.length}
+                              {field.max > 0 ? `/${field.max}` : ''}
+                            </span>
+                          </div>
+                        </div>
+                        {field.max > 0 && (
+                          <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
+                            <div
+                              className={cn(
+                                'h-full rounded-full transition-all duration-500',
+                                getFieldStatusColor(field.status),
+                              )}
+                              style={{ width: `${percentage}%` }}
+                            />
+                          </div>
+                        )}
+                        {field.status !== 'pass' && (
+                          <p className="text-xs text-stone-500 leading-relaxed">{field.message}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderExportHistory = () => {
+    return (
+      <div className="glass-card p-6 mt-8">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h3 className="text-lg font-semibold text-stone-900 flex items-center gap-2">
+              <Download className="w-5 h-5 text-brand-500" />
+              最近导出记录
+            </h3>
+            <p className="text-sm text-stone-500 mt-1">
+              {taskExports.length > 0
+                ? `当前任务已导出 ${taskExports.length} 次，保留最近 50 条历史`
+                : '暂无导出记录，点击上方按钮导出第一个发布包'}
+            </p>
+          </div>
+        </div>
+
+        {allExports.length === 0 ? (
+          <div className="py-12 text-center">
+            <Download className="w-12 h-12 mx-auto mb-3 text-stone-300" />
+            <p className="text-stone-500">还没有导出记录</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-stone-100">
+                  <th className="text-left py-3 px-4 text-sm font-medium text-stone-500">任务名</th>
+                  <th className="text-left py-3 px-4 text-sm font-medium text-stone-500">发布平台</th>
+                  <th className="text-left py-3 px-4 text-sm font-medium text-stone-500">导出时间</th>
+                  <th className="text-left py-3 px-4 text-sm font-medium text-stone-500">通过率</th>
+                  <th className="text-left py-3 px-4 text-sm font-medium text-stone-500">检查状态</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-stone-50">
+                {allExports.map((record) => {
+                  const platformNameMap: Record<string, string> = {
+                    xiaoyuzhou: '小宇宙',
+                    ximalaya: '喜马拉雅',
+                    official: '公众号',
+                    xiaohongshu: '小红书',
+                    weibo: '微博',
+                  };
+                  const rateColor =
+                    record.passRate >= 90
+                      ? 'text-emerald-600'
+                      : record.passRate >= 70
+                        ? 'text-amber-600'
+                        : 'text-rose-600';
+                  const rateBg =
+                    record.passRate >= 90
+                      ? 'from-emerald-400 to-emerald-600'
+                      : record.passRate >= 70
+                        ? 'from-amber-400 to-amber-600'
+                        : 'from-rose-400 to-rose-600';
+                  const size = 44;
+                  const strokeWidth = 5;
+                  const radius = (size - strokeWidth) / 2;
+                  const circumference = radius * 2 * Math.PI;
+                  const offset = circumference - (record.passRate / 100) * circumference;
+
+                  return (
+                    <tr key={record.id} className="hover:bg-stone-50/50 transition-colors">
+                      <td className="py-4 px-4">
+                        <p className="font-medium text-stone-800 line-clamp-1">{record.taskTitle}</p>
+                      </td>
+                      <td className="py-4 px-4">
+                        <div className="flex flex-wrap gap-1">
+                          {record.platforms.map((p) => (
+                            <span
+                              key={p}
+                              className="chip bg-brand-50 text-brand-700 text-xs"
+                            >
+                              {platformNameMap[p] || p}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-4 px-4">
+                        <span className="flex items-center gap-1.5 text-sm text-stone-600">
+                          <Calendar className="w-3.5 h-3.5 text-stone-400" />
+                          {formatDateTime(record.exportedAt)}
+                        </span>
+                      </td>
+                      <td className="py-4 px-4">
+                        <div className="flex items-center gap-3">
+                          <div className="relative" style={{ width: size, height: size }}>
+                            <svg width={size} height={size} className="transform -rotate-90">
+                              <circle
+                                cx={size / 2}
+                                cy={size / 2}
+                                r={radius}
+                                stroke="#e7e5e4"
+                                strokeWidth={strokeWidth}
+                                fill="none"
+                              />
+                              <circle
+                                cx={size / 2}
+                                cy={size / 2}
+                                r={radius}
+                                stroke="url(#grad)"
+                                strokeWidth={strokeWidth}
+                                fill="none"
+                                strokeLinecap="round"
+                                strokeDasharray={circumference}
+                                strokeDashoffset={offset}
+                              />
+                              <defs>
+                                <linearGradient id="grad" className={cn('bg-gradient-to-r', rateBg)} x1="0%" y1="0%" x2="100%" y2="0%">
+                                  <stop offset="0%" stopColor={record.passRate >= 90 ? '#10b981' : record.passRate >= 70 ? '#f59e0b' : '#f43f5e'} />
+                                  <stop offset="100%" stopColor={record.passRate >= 90 ? '#059669' : record.passRate >= 70 ? '#d97706' : '#e11d48'} />
+                                </linearGradient>
+                              </defs>
+                            </svg>
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className={cn('text-xs font-bold', rateColor)}>{record.passRate}%</span>
+                            </div>
+                          </div>
+                          <span className="text-xs text-stone-500">
+                            {record.passedChecks}/{record.totalChecks}项
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-4 px-4">
+                        {record.passRate >= 90 ? (
+                          <span className="chip bg-emerald-100 text-emerald-700">
+                            <CheckCircle className="w-3 h-3" />
+                            检查通过
+                          </span>
+                        ) : record.passRate >= 70 ? (
+                          <span className="chip bg-amber-100 text-amber-700">
+                            <AlertTriangle className="w-3 h-3" />
+                            有警告项
+                          </span>
+                        ) : (
+                          <span className="chip bg-rose-100 text-rose-700">
+                            <XCircle className="w-3 h-3" />
+                            需修正
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-stone-50 p-8">
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-5xl mx-auto">
         {renderHeader()}
         {renderStats()}
         {renderChecklist()}
+        {renderPlatformPreview()}
         {renderExport()}
+        {renderExportHistory()}
       </div>
     </div>
   );

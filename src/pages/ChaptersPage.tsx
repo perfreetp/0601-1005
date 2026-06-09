@@ -35,7 +35,7 @@ const gradientColors = [
 ];
 
 export default function ChaptersPage() {
-  const { currentTaskId, chapters, updateChapter } = useStore();
+  const { currentTaskId, chapters, updateChapter, addChapter, deleteChapter, updateChapters } = useStore();
   const taskChapters = currentTaskId ? chapters[currentTaskId] || [] : [];
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editData, setEditData] = useState<Partial<Chapter>>({});
@@ -101,34 +101,12 @@ export default function ChaptersPage() {
       summary: '',
     };
 
-    const set = useStore.getState();
-    const updated = [...(set.chapters[currentTaskId] || []), newChapter].sort(
-      (a, b) => a.startTime - b.startTime,
-    );
-    useStore.setState({
-      chapters: { ...set.chapters, [currentTaskId]: updated },
-    });
+    addChapter(currentTaskId, newChapter);
   };
 
   const handleDeleteChapter = (id: string) => {
     if (!currentTaskId) return;
-    const set = useStore.getState();
-    const list = set.chapters[currentTaskId] || [];
-    if (list.length <= 1) return;
-
-    const idx = list.findIndex((c) => c.id === id);
-    if (idx === -1) return;
-
-    const updated = list.filter((c) => c.id !== id);
-    if (idx > 0) {
-      updated[idx - 1] = { ...updated[idx - 1], endTime: list[idx].endTime };
-    } else if (updated.length > 0) {
-      updated[0] = { ...updated[0], startTime: list[idx].startTime };
-    }
-
-    useStore.setState({
-      chapters: { ...set.chapters, [currentTaskId]: updated },
-    });
+    deleteChapter(currentTaskId, id);
   };
 
   const handleDragStart = (index: number, e: React.MouseEvent) => {
@@ -160,6 +138,11 @@ export default function ChaptersPage() {
   };
 
   const handleDragEnd = () => {
+    if (currentTaskId && draggingIndex !== null) {
+      const state = useStore.getState();
+      const current = state.chapters[currentTaskId] || [];
+      updateChapters(currentTaskId, [...current]);
+    }
     setDraggingIndex(null);
   };
 
